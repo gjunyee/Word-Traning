@@ -1,0 +1,801 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ============================================================
+// PRESET WORD BANKS
+// ============================================================
+const PRESET_BANKS = {
+  "小学基础词 (P1-P3)": [
+    { en: "apple", zh: "苹果" }, { en: "bird", zh: "鸟" }, { en: "cat", zh: "猫" },
+    { en: "dog", zh: "狗" }, { en: "egg", zh: "蛋" }, { en: "fish", zh: "鱼" },
+    { en: "girl", zh: "女孩" }, { en: "hat", zh: "帽子" }, { en: "ice", zh: "冰" },
+    { en: "jump", zh: "跳" }, { en: "kite", zh: "风筝" }, { en: "lamp", zh: "灯" },
+    { en: "milk", zh: "牛奶" }, { en: "nest", zh: "鸟巢" }, { en: "open", zh: "打开" },
+    { en: "park", zh: "公园" }, { en: "queen", zh: "皇后" }, { en: "rain", zh: "雨" },
+    { en: "sun", zh: "太阳" }, { en: "tree", zh: "树" }, { en: "umbrella", zh: "雨伞" },
+    { en: "van", zh: "货车" }, { en: "water", zh: "水" }, { en: "box", zh: "箱子" },
+    { en: "yellow", zh: "黄色" }, { en: "zoo", zh: "动物园" }, { en: "book", zh: "书" },
+    { en: "cake", zh: "蛋糕" }, { en: "door", zh: "门" }, { en: "farm", zh: "农场" },
+  ],
+  "小学进阶词 (P4-P6)": [
+    { en: "adventure", zh: "冒险" }, { en: "beautiful", zh: "美丽的" }, { en: "careful", zh: "小心的" },
+    { en: "dangerous", zh: "危险的" }, { en: "excellent", zh: "优秀的" }, { en: "friendly", zh: "友善的" },
+    { en: "grateful", zh: "感激的" }, { en: "horrible", zh: "可怕的" }, { en: "important", zh: "重要的" },
+    { en: "jealous", zh: "嫉妒的" }, { en: "knowledge", zh: "知识" }, { en: "laughter", zh: "笑声" },
+    { en: "mountain", zh: "山" }, { en: "necessary", zh: "必要的" }, { en: "ordinary", zh: "普通的" },
+    { en: "peaceful", zh: "和平的" }, { en: "question", zh: "问题" }, { en: "remember", zh: "记得" },
+    { en: "surprise", zh: "惊喜" }, { en: "together", zh: "一起" }, { en: "umbrella", zh: "雨伞" },
+    { en: "vacation", zh: "假期" }, { en: "wonderful", zh: "精彩的" }, { en: "excited", zh: "兴奋的" },
+    { en: "youngest", zh: "最年轻的" }, { en: "zebra", zh: "斑马" }, { en: "achieve", zh: "达成" },
+    { en: "between", zh: "之间" }, { en: "century", zh: "世纪" }, { en: "discuss", zh: "讨论" },
+  ],
+  "中学词汇 (F1-F3)": [
+    { en: "accomplish", zh: "完成/实现" }, { en: "benefit", zh: "利益/好处" }, { en: "character", zh: "性格/特点" },
+    { en: "describe", zh: "描述" }, { en: "environment", zh: "环境" }, { en: "fortunate", zh: "幸运的" },
+    { en: "government", zh: "政府" }, { en: "however", zh: "然而" }, { en: "influence", zh: "影响" },
+    { en: "journey", zh: "旅程" }, { en: "language", zh: "语言" }, { en: "material", zh: "材料/物质" },
+    { en: "natural", zh: "自然的" }, { en: "opportunity", zh: "机会" }, { en: "participate", zh: "参与" },
+    { en: "quality", zh: "品质/质量" }, { en: "responsible", zh: "负责任的" }, { en: "solution", zh: "解决方案" },
+    { en: "tradition", zh: "传统" }, { en: "understand", zh: "理解" }, { en: "various", zh: "各种各样的" },
+    { en: "wisdom", zh: "智慧" }, { en: "experience", zh: "经验/经历" }, { en: "youthful", zh: "年轻的" },
+    { en: "appreciate", zh: "欣赏/感激" }, { en: "brilliant", zh: "才华横溢的" }, { en: "challenge", zh: "挑战" },
+    { en: "develop", zh: "发展/开发" }, { en: "encourage", zh: "鼓励" }, { en: "failure", zh: "失败" },
+  ],
+};
+
+// ============================================================
+// STORAGE KEYS
+// ============================================================
+const KEYS = {
+  wordBank: "spelling_wordBank",
+  sessionHistory: "spelling_sessionHistory",
+  currentSession: "spelling_currentSession",
+};
+
+// ============================================================
+// HELPER: speak word aloud
+// ============================================================
+function speak(text) {
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-US";
+    u.rate = 0.85;
+    window.speechSynthesis.speak(u);
+  }
+}
+
+// ============================================================
+// MAIN APP
+// ============================================================
+export default function SpellingApp() {
+  const [screen, setScreen] = useState("home"); // home | manage | session | result | review
+  const [wordBank, setWordBank] = useState([]); // { en, zh, streak, totalAttempts, totalCorrect, addedOn }
+  const [sessionWords, setSessionWords] = useState([]); // words in current quiz
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const [userInput, setUserInput] = useState("");
+  const [feedback, setFeedback] = useState(null); // null | "correct" | "wrong"
+  const [sessionResults, setSessionResults] = useState([]); // { word, correct }
+  const [showAnswer, setShowAnswer] = useState(false);
+  const [notification, setNotification] = useState(null);
+  const [manageTab, setManageTab] = useState("add"); // add | preset | list
+  const [newWord, setNewWord] = useState({ en: "", zh: "" });
+  const [bulkInput, setBulkInput] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const inputRef = useRef(null);
+
+  // ── Load from storage ──────────────────────────────────────
+  useEffect(() => {
+    async function load() {
+      try {
+        const wb = await window.storage.get(KEYS.wordBank);
+        if (wb) setWordBank(JSON.parse(wb.value));
+        const cs = await window.storage.get(KEYS.currentSession);
+        if (cs) {
+          const s = JSON.parse(cs.value);
+          setSessionWords(s.words);
+          setCurrentIdx(s.idx);
+          setSessionResults(s.results);
+          setScreen("session");
+        }
+      } catch (_) {}
+      setLoaded(true);
+    }
+    load();
+  }, []);
+
+  // ── Save word bank ─────────────────────────────────────────
+  const saveWordBank = useCallback(async (wb) => {
+    await window.storage.set(KEYS.wordBank, JSON.stringify(wb));
+    setWordBank(wb);
+  }, []);
+
+  // ── Save session state ─────────────────────────────────────
+  const saveSession = useCallback(async (words, idx, results) => {
+    await window.storage.set(KEYS.currentSession, JSON.stringify({ words, idx, results }));
+  }, []);
+
+  // ── Toast notification ─────────────────────────────────────
+  const toast = (msg, type = "info") => {
+    setNotification({ msg, type });
+    setTimeout(() => setNotification(null), 2500);
+  };
+
+  // ── Build session words ────────────────────────────────────
+  function buildSession(bank) {
+    if (bank.length === 0) return [];
+
+    // Separate: struggling words (streak < 3 after at least 1 attempt with wrong)
+    // and unmastered words
+    const struggling = bank.filter(w => w.totalAttempts > 0 && w.streak < 3 && w.streak >= 0);
+    const fresh = bank.filter(w => w.totalAttempts === 0);
+    const mastered = bank.filter(w => w.streak >= 3);
+
+    // Build pool: struggling gets 2x weight, fresh gets 1x, mastered 0.5x
+    let pool = [];
+    struggling.forEach(w => pool.push(w, w)); // double weight
+    fresh.forEach(w => pool.push(w));
+    mastered.forEach(w => { if (Math.random() < 0.3) pool.push(w); });
+
+    // Shuffle
+    pool = pool.sort(() => Math.random() - 0.5);
+
+    // Deduplicate, limit to 20
+    const seen = new Set();
+    const result = [];
+    for (const w of pool) {
+      if (!seen.has(w.en) && result.length < 20) {
+        seen.add(w.en);
+        result.push({ ...w });
+      }
+    }
+    // If less than 20, pad with any not yet in result
+    if (result.length < 20) {
+      for (const w of bank) {
+        if (!seen.has(w.en)) {
+          seen.add(w.en);
+          result.push({ ...w });
+          if (result.length >= 20) break;
+        }
+      }
+    }
+    return result.slice(0, 20);
+  }
+
+  // ── Start session ──────────────────────────────────────────
+  function startSession() {
+    if (wordBank.length === 0) {
+      toast("请先添加词语！", "error");
+      return;
+    }
+    const words = buildSession(wordBank);
+    setSessionWords(words);
+    setCurrentIdx(0);
+    setSessionResults([]);
+    setUserInput("");
+    setFeedback(null);
+    setShowAnswer(false);
+    saveSession(words, 0, []);
+    setScreen("session");
+  }
+
+  // ── Submit answer ──────────────────────────────────────────
+  function submitAnswer() {
+    const current = sessionWords[currentIdx];
+    if (!current) return;
+    const isCorrect = userInput.trim().toLowerCase() === current.en.toLowerCase();
+    setFeedback(isCorrect ? "correct" : "wrong");
+    setShowAnswer(!isCorrect);
+    const newResults = [...sessionResults, { word: current, correct: isCorrect }];
+    setSessionResults(newResults);
+
+    // Update word bank streaks
+    const updatedBank = wordBank.map(w => {
+      if (w.en === current.en) {
+        const newStreak = isCorrect ? (w.streak || 0) + 1 : 0;
+        return {
+          ...w,
+          streak: newStreak,
+          totalAttempts: (w.totalAttempts || 0) + 1,
+          totalCorrect: (w.totalCorrect || 0) + (isCorrect ? 1 : 0),
+          lastSeen: new Date().toISOString(),
+        };
+      }
+      return w;
+    });
+    saveWordBank(updatedBank);
+
+    setTimeout(() => {
+      setFeedback(null);
+      setShowAnswer(false);
+      setUserInput("");
+      const nextIdx = currentIdx + 1;
+      if (nextIdx >= sessionWords.length) {
+        window.storage.delete(KEYS.currentSession);
+        setScreen("result");
+      } else {
+        setCurrentIdx(nextIdx);
+        saveSession(sessionWords, nextIdx, newResults);
+        if (inputRef.current) inputRef.current.focus();
+      }
+    }, isCorrect ? 900 : 1800);
+  }
+
+  // ── Add word manually ──────────────────────────────────────
+  function addWord() {
+    const en = newWord.en.trim().toLowerCase();
+    const zh = newWord.zh.trim();
+    if (!en || !zh) { toast("请填写英文和华文！", "error"); return; }
+    if (wordBank.some(w => w.en === en)) { toast("这个词已经存在了！", "error"); return; }
+    const updated = [...wordBank, { en, zh, streak: 0, totalAttempts: 0, totalCorrect: 0, addedOn: new Date().toISOString() }];
+    saveWordBank(updated);
+    setNewWord({ en: "", zh: "" });
+    toast("✅ 词语已添加！");
+  }
+
+  // ── Bulk add ───────────────────────────────────────────────
+  function bulkAdd() {
+    const lines = bulkInput.split("\n").map(l => l.trim()).filter(Boolean);
+    let added = 0, skipped = 0;
+    const updates = [...wordBank];
+    for (const line of lines) {
+      const parts = line.split(/[,，\t]+/);
+      if (parts.length < 2) { skipped++; continue; }
+      const en = parts[0].trim().toLowerCase();
+      const zh = parts[1].trim();
+      if (!en || !zh || updates.some(w => w.en === en)) { skipped++; continue; }
+      updates.push({ en, zh, streak: 0, totalAttempts: 0, totalCorrect: 0, addedOn: new Date().toISOString() });
+      added++;
+    }
+    saveWordBank(updates);
+    setBulkInput("");
+    toast(`✅ 添加了 ${added} 个词${skipped > 0 ? `，跳过 ${skipped} 个` : ""}`, added > 0 ? "success" : "error");
+  }
+
+  // ── Add from preset ────────────────────────────────────────
+  function addPreset(bankName) {
+    const words = PRESET_BANKS[bankName];
+    let added = 0;
+    const updates = [...wordBank];
+    for (const w of words) {
+      if (!updates.some(x => x.en === w.en)) {
+        updates.push({ ...w, streak: 0, totalAttempts: 0, totalCorrect: 0, addedOn: new Date().toISOString() });
+        added++;
+      }
+    }
+    saveWordBank(updates);
+    toast(`✅ 已添加 ${added} 个词！`, "success");
+  }
+
+  // ── Delete word ────────────────────────────────────────────
+  function deleteWord(en) {
+    const updated = wordBank.filter(w => w.en !== en);
+    saveWordBank(updated);
+    toast("已删除", "info");
+  }
+
+  // ── Stats ─────────────────────────────────────────────────
+  const mastered = wordBank.filter(w => w.streak >= 3).length;
+  const struggling = wordBank.filter(w => w.totalAttempts > 0 && w.streak < 3).length;
+  const fresh = wordBank.filter(w => w.totalAttempts === 0).length;
+
+  if (!loaded) return (
+    <div style={styles.loadingScreen}>
+      <div style={styles.spinner} />
+      <p style={{ color: "#94a3b8", marginTop: 16 }}>载入中...</p>
+    </div>
+  );
+
+  // ══════════════════════════════════════════════════════════
+  // SCREENS
+  // ══════════════════════════════════════════════════════════
+
+  // ── HOME ──────────────────────────────────────────────────
+  if (screen === "home") return (
+    <div style={styles.root}>
+      {notification && <Toast msg={notification.msg} type={notification.type} />}
+
+      <div style={styles.homeHeader}>
+        <div style={styles.logo}>✏️</div>
+        <h1 style={styles.appTitle}>Spelling<br /><span style={styles.titleAccent}>Master</span></h1>
+        <p style={styles.subtitle}>每天进步一点点</p>
+      </div>
+
+      <div style={styles.statsRow}>
+        <StatCard label="词库总数" value={wordBank.length} color="#6366f1" />
+        <StatCard label="已掌握" value={mastered} color="#22c55e" />
+        <StatCard label="需复习" value={struggling} color="#f59e0b" />
+        <StatCard label="未练习" value={fresh} color="#94a3b8" />
+      </div>
+
+      <div style={styles.homeActions}>
+        <button style={styles.bigBtn} onClick={startSession}>
+          <span style={{ fontSize: 28 }}>🎯</span>
+          <div>
+            <div style={styles.bigBtnTitle}>开始 Spelling</div>
+            <div style={styles.bigBtnSub}>每轮 {Math.min(wordBank.length, 20)} 题</div>
+          </div>
+        </button>
+
+        <button style={{ ...styles.bigBtn, ...styles.bigBtnSecondary }} onClick={() => setScreen("manage")}>
+          <span style={{ fontSize: 28 }}>📚</span>
+          <div>
+            <div style={{ ...styles.bigBtnTitle, color: "#e2e8f0" }}>管理词库</div>
+            <div style={styles.bigBtnSub}>添加 / 查看词语</div>
+          </div>
+        </button>
+      </div>
+
+      {wordBank.length > 0 && (
+        <div style={styles.recentSection}>
+          <p style={styles.sectionLabel}>📌 需要加强的词</p>
+          <div style={styles.wordPillRow}>
+            {wordBank.filter(w => w.streak < 3 && w.totalAttempts > 0).slice(0, 8).map(w => (
+              <div key={w.en} style={styles.wordPill}>
+                <span style={styles.pillEn}>{w.en}</span>
+                <span style={styles.pillStreak}>{"★".repeat(Math.max(0, w.streak || 0))}{"☆".repeat(Math.max(0, 3 - (w.streak || 0)))}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  // ── MANAGE ────────────────────────────────────────────────
+  if (screen === "manage") return (
+    <div style={styles.root}>
+      {notification && <Toast msg={notification.msg} type={notification.type} />}
+      <div style={styles.topBar}>
+        <button style={styles.backBtn} onClick={() => setScreen("home")}>← 返回</button>
+        <h2 style={styles.pageTitle}>词库管理</h2>
+        <div style={{ width: 60 }} />
+      </div>
+
+      <div style={styles.tabs}>
+        {["add", "preset", "list"].map(t => (
+          <button key={t} style={{ ...styles.tab, ...(manageTab === t ? styles.tabActive : {}) }}
+            onClick={() => setManageTab(t)}>
+            {t === "add" ? "➕ 手动" : t === "preset" ? "📦 预设" : `📋 词库(${wordBank.length})`}
+          </button>
+        ))}
+      </div>
+
+      {manageTab === "add" && (
+        <div style={styles.card}>
+          <p style={styles.cardLabel}>逐个添加</p>
+          <input style={styles.input} placeholder="英文 (e.g. beautiful)" value={newWord.en}
+            onChange={e => setNewWord({ ...newWord, en: e.target.value })}
+            onKeyDown={e => e.key === "Enter" && addWord()} />
+          <input style={styles.input} placeholder="华文意思 (e.g. 美丽的)" value={newWord.zh}
+            onChange={e => setNewWord({ ...newWord, zh: e.target.value })}
+            onKeyDown={e => e.key === "Enter" && addWord()} />
+          <button style={styles.addBtn} onClick={addWord}>添加词语</button>
+
+          <div style={styles.divider} />
+          <p style={styles.cardLabel}>批量添加 <span style={styles.hint}>（每行一个：英文, 华文）</span></p>
+          <textarea style={styles.textarea} rows={6} placeholder={"beautiful, 美丽的\ncareful, 小心的\nadventure, 冒险"}
+            value={bulkInput} onChange={e => setBulkInput(e.target.value)} />
+          <button style={styles.addBtn} onClick={bulkAdd}>批量添加</button>
+        </div>
+      )}
+
+      {manageTab === "preset" && (
+        <div style={styles.card}>
+          {Object.keys(PRESET_BANKS).map(name => (
+            <div key={name} style={styles.presetItem}>
+              <div>
+                <div style={styles.presetName}>{name}</div>
+                <div style={styles.presetCount}>{PRESET_BANKS[name].length} 个词</div>
+              </div>
+              <button style={styles.presetBtn} onClick={() => addPreset(name)}>添加</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {manageTab === "list" && (
+        <div style={{ flex: 1, overflowY: "auto", padding: "0 16px 80px" }}>
+          {wordBank.length === 0 && <p style={styles.empty}>词库是空的，请先添加词语</p>}
+          {wordBank.map(w => (
+            <div key={w.en} style={styles.wordRow}>
+              <div style={styles.wordRowLeft}>
+                <span style={styles.wordEn}>{w.en}</span>
+                <span style={styles.wordZh}>{w.zh}</span>
+              </div>
+              <div style={styles.wordRowRight}>
+                <StreakDots streak={w.streak || 0} />
+                <button style={styles.deleteBtn} onClick={() => deleteWord(w.en)}>✕</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  // ── SESSION ───────────────────────────────────────────────
+  if (screen === "session") {
+    const current = sessionWords[currentIdx];
+    const progress = sessionWords.length > 0 ? (currentIdx / sessionWords.length) * 100 : 0;
+    const isStruggling = current && current.totalAttempts > 0 && (current.streak || 0) < 3;
+
+    return (
+      <div style={styles.root}>
+        <div style={styles.sessionHeader}>
+          <button style={styles.backBtn} onClick={() => { window.storage.delete(KEYS.currentSession); setScreen("home"); }}>✕</button>
+          <div style={styles.progressWrap}>
+            <div style={{ ...styles.progressBar, width: `${progress}%` }} />
+          </div>
+          <span style={styles.progressText}>{currentIdx + 1}/{sessionWords.length}</span>
+        </div>
+
+        {current && (
+          <div style={styles.questionArea}>
+            {isStruggling && (
+              <div style={styles.reviewBadge}>🔁 复习中</div>
+            )}
+            <div style={styles.streakRow}>
+              <StreakDots streak={current.streak || 0} large />
+            </div>
+
+            <div style={styles.chineseWord}>{current.zh}</div>
+            <p style={styles.questionHint}>请拼出英文单词</p>
+            <div style={styles.letterCount}>
+              {userInput ? `${userInput.length} 个字母` : `共 ${current.en.length} 个字母`}
+            </div>
+
+            <input
+              ref={inputRef}
+              autoFocus
+              style={{
+                ...styles.answerInput,
+                ...(feedback === "correct" ? styles.inputCorrect : {}),
+                ...(feedback === "wrong" ? styles.inputWrong : {}),
+              }}
+              value={userInput}
+              onChange={e => setFeedback(null) || setUserInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && userInput.trim() && !feedback && submitAnswer()}
+              placeholder="在这里输入..."
+              disabled={!!feedback}
+            />
+
+            {showAnswer && (
+              <div style={styles.correctAnswer}>
+                正确答案：<strong>{current.en}</strong>
+              </div>
+            )}
+
+            <div style={styles.sessionBtns}>
+              <button style={styles.hintBtn} onClick={() => speak(current.en)}>🔊 发音</button>
+              <button
+                style={{ ...styles.submitBtn, opacity: (!userInput.trim() || !!feedback) ? 0.5 : 1 }}
+                onClick={submitAnswer}
+                disabled={!userInput.trim() || !!feedback}>
+                确认 ✓
+              </button>
+            </div>
+
+            {feedback && (
+              <div style={{ ...styles.feedbackBanner, ...(feedback === "correct" ? styles.feedbackCorrect : styles.feedbackWrong) }}>
+                {feedback === "correct" ? "🎉 答对了！" : "❌ 再接再厉！"}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── RESULT ────────────────────────────────────────────────
+  if (screen === "result") {
+    const correct = sessionResults.filter(r => r.correct).length;
+    const total = sessionResults.length;
+    const pct = Math.round((correct / total) * 100);
+    const wrongWords = sessionResults.filter(r => !r.correct).map(r => r.word);
+
+    return (
+      <div style={styles.root}>
+        <div style={styles.resultHeader}>
+          <div style={styles.scoreCircle}>
+            <span style={styles.scorePct}>{pct}%</span>
+            <span style={styles.scoreLabel}>{correct}/{total}</span>
+          </div>
+          <h2 style={styles.resultTitle}>
+            {pct === 100 ? "🏆 完美！" : pct >= 80 ? "🎉 非常棒！" : pct >= 60 ? "👍 继续加油！" : "💪 继续练习！"}
+          </h2>
+          <p style={styles.resultSub}>本轮 Spelling 已完成</p>
+        </div>
+
+        {wrongWords.length > 0 && (
+          <div style={styles.wrongSection}>
+            <p style={styles.sectionLabel}>❌ 答错的词（将会重点复习）</p>
+            {wrongWords.map(w => (
+              <div key={w.en} style={styles.wrongRow}>
+                <span style={styles.wrongZh}>{w.zh}</span>
+                <span style={styles.wrongEn}>{w.en}</span>
+                <StreakDots streak={0} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={styles.resultActions}>
+          <button style={styles.bigBtn} onClick={() => { setScreen("home"); startSession(); }}>
+            <span style={{ fontSize: 24 }}>🔄</span>
+            <div>
+              <div style={styles.bigBtnTitle}>再来一轮</div>
+              <div style={styles.bigBtnSub}>包含旧词复习</div>
+            </div>
+          </button>
+          <button style={{ ...styles.bigBtn, ...styles.bigBtnSecondary }} onClick={() => setScreen("home")}>
+            <span style={{ fontSize: 24 }}>🏠</span>
+            <div>
+              <div style={{ ...styles.bigBtnTitle, color: "#e2e8f0" }}>回到主页</div>
+              <div style={styles.bigBtnSub}>稍后再练</div>
+            </div>
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
+// ── Sub-components ─────────────────────────────────────────
+function StatCard({ label, value, color }) {
+  return (
+    <div style={{ ...styles.statCard, borderTop: `3px solid ${color}` }}>
+      <div style={{ ...styles.statValue, color }}>{value}</div>
+      <div style={styles.statLabel}>{label}</div>
+    </div>
+  );
+}
+
+function StreakDots({ streak, large }) {
+  const size = large ? 14 : 10;
+  return (
+    <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+      {[0, 1, 2].map(i => (
+        <div key={i} style={{
+          width: size, height: size, borderRadius: "50%",
+          background: i < streak ? "#22c55e" : "#334155",
+          border: "1px solid " + (i < streak ? "#16a34a" : "#475569"),
+          transition: "background 0.3s",
+        }} />
+      ))}
+    </div>
+  );
+}
+
+function Toast({ msg, type }) {
+  const bg = type === "error" ? "#ef4444" : type === "success" ? "#22c55e" : "#6366f1";
+  return (
+    <div style={{ ...styles.toast, background: bg }}>{msg}</div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════
+// STYLES
+// ══════════════════════════════════════════════════════════
+const styles = {
+  root: {
+    minHeight: "100vh",
+    background: "#0f172a",
+    color: "#e2e8f0",
+    fontFamily: "'Nunito', 'Segoe UI', sans-serif",
+    display: "flex",
+    flexDirection: "column",
+    maxWidth: 480,
+    margin: "0 auto",
+    position: "relative",
+  },
+  loadingScreen: {
+    minHeight: "100vh", background: "#0f172a", display: "flex",
+    flexDirection: "column", alignItems: "center", justifyContent: "center",
+  },
+  spinner: {
+    width: 40, height: 40, borderRadius: "50%",
+    border: "3px solid #334155", borderTop: "3px solid #6366f1",
+    animation: "spin 0.8s linear infinite",
+  },
+  toast: {
+    position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
+    padding: "10px 20px", borderRadius: 12, color: "white", fontWeight: 700,
+    fontSize: 14, zIndex: 1000, boxShadow: "0 4px 20px rgba(0,0,0,0.4)",
+    whiteSpace: "nowrap",
+  },
+  homeHeader: {
+    padding: "40px 24px 24px",
+    background: "linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%)",
+    textAlign: "center",
+  },
+  logo: { fontSize: 48, marginBottom: 8 },
+  appTitle: {
+    fontSize: 36, fontWeight: 900, margin: 0,
+    color: "#f8fafc", lineHeight: 1.1, letterSpacing: -1,
+  },
+  titleAccent: { color: "#818cf8" },
+  subtitle: { color: "#64748b", fontSize: 14, marginTop: 8 },
+  statsRow: {
+    display: "flex", gap: 10, padding: "16px 16px 0",
+  },
+  statCard: {
+    flex: 1, background: "#1e293b", borderRadius: 12,
+    padding: "12px 8px", textAlign: "center",
+  },
+  statValue: { fontSize: 22, fontWeight: 900 },
+  statLabel: { fontSize: 10, color: "#64748b", marginTop: 2, lineHeight: 1.2 },
+  homeActions: { padding: "16px 16px 0", display: "flex", flexDirection: "column", gap: 12 },
+  bigBtn: {
+    display: "flex", alignItems: "center", gap: 16,
+    background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
+    border: "none", borderRadius: 16, padding: "18px 20px",
+    cursor: "pointer", textAlign: "left", width: "100%",
+    boxShadow: "0 4px 20px rgba(99,102,241,0.4)",
+  },
+  bigBtnSecondary: {
+    background: "#1e293b",
+    boxShadow: "none",
+    border: "1px solid #334155",
+  },
+  bigBtnTitle: { color: "white", fontWeight: 800, fontSize: 17 },
+  bigBtnSub: { color: "#94a3b8", fontSize: 12, marginTop: 2 },
+  recentSection: { padding: "16px 16px 24px" },
+  sectionLabel: { color: "#64748b", fontSize: 12, fontWeight: 700, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 },
+  wordPillRow: { display: "flex", flexWrap: "wrap", gap: 8 },
+  wordPill: {
+    background: "#1e293b", borderRadius: 20, padding: "6px 12px",
+    display: "flex", flexDirection: "column", gap: 2,
+  },
+  pillEn: { fontSize: 13, fontWeight: 700, color: "#818cf8" },
+  pillStreak: { fontSize: 9, color: "#64748b", letterSpacing: 1 },
+
+  // Manage
+  topBar: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    padding: "16px 16px 8px",
+    borderBottom: "1px solid #1e293b",
+  },
+  backBtn: {
+    background: "none", border: "none", color: "#818cf8",
+    fontSize: 15, fontWeight: 700, cursor: "pointer", padding: "4px 8px",
+  },
+  pageTitle: { color: "#f8fafc", fontSize: 16, fontWeight: 800, margin: 0 },
+  tabs: { display: "flex", padding: "12px 16px", gap: 8 },
+  tab: {
+    flex: 1, padding: "8px 4px", borderRadius: 10, border: "1px solid #334155",
+    background: "#1e293b", color: "#64748b", fontSize: 12, fontWeight: 700, cursor: "pointer",
+  },
+  tabActive: {
+    background: "#4f46e5", color: "white", border: "1px solid #4f46e5",
+  },
+  card: { padding: "0 16px 80px", display: "flex", flexDirection: "column", gap: 10 },
+  cardLabel: { color: "#94a3b8", fontSize: 13, fontWeight: 700, marginBottom: 4 },
+  hint: { fontWeight: 400, color: "#64748b" },
+  input: {
+    background: "#1e293b", border: "1px solid #334155", borderRadius: 12,
+    color: "#f8fafc", padding: "12px 14px", fontSize: 15, outline: "none",
+    fontFamily: "inherit",
+  },
+  textarea: {
+    background: "#1e293b", border: "1px solid #334155", borderRadius: 12,
+    color: "#f8fafc", padding: "12px 14px", fontSize: 14, outline: "none",
+    fontFamily: "monospace", resize: "vertical",
+  },
+  addBtn: {
+    background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
+    border: "none", borderRadius: 12, color: "white",
+    padding: "12px", fontSize: 15, fontWeight: 700, cursor: "pointer",
+  },
+  divider: { height: 1, background: "#1e293b", margin: "8px 0" },
+  presetItem: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    background: "#1e293b", borderRadius: 12, padding: "14px 16px",
+  },
+  presetName: { fontWeight: 700, fontSize: 14, color: "#e2e8f0" },
+  presetCount: { fontSize: 12, color: "#64748b", marginTop: 2 },
+  presetBtn: {
+    background: "#4f46e5", border: "none", borderRadius: 8,
+    color: "white", padding: "8px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer",
+  },
+  wordRow: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    padding: "12px 0", borderBottom: "1px solid #1e293b",
+  },
+  wordRowLeft: { display: "flex", flexDirection: "column", gap: 2 },
+  wordEn: { fontWeight: 700, fontSize: 16, color: "#818cf8" },
+  wordZh: { fontSize: 13, color: "#64748b" },
+  wordRowRight: { display: "flex", alignItems: "center", gap: 10 },
+  deleteBtn: {
+    background: "none", border: "none", color: "#ef4444",
+    fontSize: 16, cursor: "pointer", padding: "4px 8px",
+  },
+  empty: { color: "#475569", textAlign: "center", padding: "40px 0" },
+
+  // Session
+  sessionHeader: {
+    display: "flex", alignItems: "center", gap: 12,
+    padding: "16px 16px 12px",
+  },
+  progressWrap: {
+    flex: 1, height: 8, background: "#1e293b", borderRadius: 4, overflow: "hidden",
+  },
+  progressBar: {
+    height: "100%", background: "linear-gradient(90deg, #4f46e5, #7c3aed)",
+    borderRadius: 4, transition: "width 0.4s ease",
+  },
+  progressText: { fontSize: 13, color: "#64748b", fontWeight: 700, whiteSpace: "nowrap" },
+  questionArea: {
+    flex: 1, padding: "16px 24px 32px",
+    display: "flex", flexDirection: "column", alignItems: "center", gap: 16,
+  },
+  reviewBadge: {
+    background: "#78350f", color: "#fbbf24", fontSize: 12, fontWeight: 700,
+    padding: "4px 12px", borderRadius: 20,
+  },
+  streakRow: { display: "flex", gap: 8, alignItems: "center" },
+  chineseWord: {
+    fontSize: 52, fontWeight: 900, color: "#f8fafc",
+    textAlign: "center", lineHeight: 1.2,
+    textShadow: "0 0 40px rgba(129,140,248,0.4)",
+  },
+  questionHint: { fontSize: 14, color: "#64748b", margin: 0 },
+  letterCount: { fontSize: 13, color: "#818cf8", fontWeight: 600 },
+  answerInput: {
+    width: "100%", maxWidth: 320,
+    background: "#1e293b", border: "2px solid #334155",
+    borderRadius: 16, color: "#f8fafc",
+    padding: "16px 20px", fontSize: 22, fontWeight: 700,
+    textAlign: "center", outline: "none", fontFamily: "inherit",
+    transition: "border-color 0.2s, background 0.2s",
+    boxSizing: "border-box",
+  },
+  inputCorrect: { borderColor: "#22c55e", background: "#052e16" },
+  inputWrong: { borderColor: "#ef4444", background: "#2d0707" },
+  correctAnswer: {
+    fontSize: 16, color: "#f59e0b", fontWeight: 700,
+    background: "#1c1407", borderRadius: 12, padding: "10px 20px",
+  },
+  sessionBtns: { display: "flex", gap: 12, width: "100%", maxWidth: 320 },
+  hintBtn: {
+    flex: 1, background: "#1e293b", border: "1px solid #334155",
+    borderRadius: 12, color: "#94a3b8", padding: "12px",
+    fontSize: 14, fontWeight: 700, cursor: "pointer",
+  },
+  submitBtn: {
+    flex: 2, background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
+    border: "none", borderRadius: 12, color: "white",
+    padding: "12px", fontSize: 16, fontWeight: 800, cursor: "pointer",
+    transition: "opacity 0.2s",
+  },
+  feedbackBanner: {
+    width: "100%", maxWidth: 320, textAlign: "center",
+    borderRadius: 12, padding: "12px", fontWeight: 800, fontSize: 18,
+  },
+  feedbackCorrect: { background: "#052e16", color: "#22c55e" },
+  feedbackWrong: { background: "#2d0707", color: "#ef4444" },
+
+  // Result
+  resultHeader: {
+    padding: "40px 24px 24px",
+    display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+    background: "linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%)",
+  },
+  scoreCircle: {
+    width: 120, height: 120, borderRadius: "50%",
+    background: "linear-gradient(135deg, #4f46e5, #7c3aed)",
+    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+    boxShadow: "0 0 40px rgba(99,102,241,0.5)",
+  },
+  scorePct: { fontSize: 32, fontWeight: 900, color: "white" },
+  scoreLabel: { fontSize: 13, color: "#c7d2fe" },
+  resultTitle: { fontSize: 24, fontWeight: 900, margin: 0, color: "#f8fafc" },
+  resultSub: { color: "#64748b", fontSize: 14, margin: 0 },
+  wrongSection: { padding: "16px 16px 0" },
+  wrongRow: {
+    display: "flex", alignItems: "center", gap: 12,
+    background: "#1e293b", borderRadius: 12, padding: "12px 14px", marginBottom: 8,
+  },
+  wrongZh: { fontSize: 16, color: "#e2e8f0", flex: 1 },
+  wrongEn: { fontSize: 16, color: "#818cf8", fontWeight: 700 },
+  resultActions: { padding: "16px", display: "flex", flexDirection: "column", gap: 12 },
+};
